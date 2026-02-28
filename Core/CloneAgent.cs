@@ -16,6 +16,7 @@ namespace Core
         private DateTime _lastActivity;
         private readonly TimeSpan _timeout = TimeSpan.FromSeconds(3);
         private PublisherSocket _collectorClient;
+        private readonly NetMQQueue<KvMsg> _outbox = new();
 
         public CloneAgent(string[] endpoints, ConcurrentDictionary<string, KvMsg> cache)
         {
@@ -26,16 +27,8 @@ namespace Core
         // Beküldés a szervernek (Collector port: P+2)
         public void Set(string key, byte[] value)
         {
-            if (_collectorClient == null) return;
-
             var kv = new KvMsg { Key = key, UUID = Guid.NewGuid(), Body = value };
-            var msg = new NetMQMessage();
-            msg.Append("KVSET");
-            kv.AppendToMessage(msg);
-
-            // Naplózás a teszteléshez
-            Console.WriteLine($"[Agent] Küldés a szervernek: {key}");
-            _collectorClient.SendMultipartMessage(msg);
+            _outbox.Enqueue(kv); // Csak betesszük a sorba
         }
 
         public void Run(CancellationToken token)
@@ -50,10 +43,24 @@ namespace Core
                 using (var snapshot = new DealerSocket($">tcp://{host}:{p}"))
                 using (var subscriber = new SubscriberSocket($">tcp://{host}:{p + 1}"))
                 using (_collectorClient = new PublisherSocket($">tcp://{host}:{p + 2}"))
-                using (var poller = new NetMQPoller { subscriber })
+                using (var poller = new NetMQPoller { subscriber , _outbox })
                 {
                     subscriber.SubscribeToAnyTopic();
                     _lastActivity = DateTime.Now;
+
+                    // HOZZÁADVA: Kiküldés eseménykezelője a poller szálon
+                    _outbox.ReceiveReady += (s, e) =>
+                    {
+                        var kv = _outbox.Dequeue();
+                        if (_collectorClient != null)
+                        {
+                            var msg = new NetMQMessage();
+                            msg.Append("KVSET");
+                            kv.AppendToMessage(msg);
+                            Console.WriteLine($"[Agent] Küldés a szervernek: {kv.Key}");
+                            _collectorClient.SendMultipartMessage(msg);
+                        }
+                    };
 
                     // 1. Snapshot kérés
                     var req = new NetMQMessage();

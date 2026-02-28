@@ -32,6 +32,44 @@ namespace Core
                 // --- 1. SZINKRONIZÁCIÓ (Ha Backup módban van) ---
                 if (isBackup)
                 {
+                    Console.WriteLine($"[BACKUP] Kezdeti állapot lekérése a Primary-től ({peerHost}:{port})...");
+
+                    // Kezdeti pillanatkép lekérése szinkron módon
+                    using (var peerSnapshot = new DealerSocket($">tcp://{peerHost}:{port}"))
+                    {
+                        var req = new NetMQMessage();
+                        req.Append("ICANHAZ?");
+                        req.Append("");
+                        peerSnapshot.SendMultipartMessage(req);
+
+                        bool syncDone = false;
+                        while (!syncDone)
+                        {
+                            NetMQMessage msg = null;
+                            if (peerSnapshot.TryReceiveMultipartMessage(TimeSpan.FromSeconds(3), ref msg))
+                            {
+                                if (msg[0].ConvertToString() == "KVSYNC")
+                                {
+                                    var kv = KvMsg.FromFrames(msg, 1);
+                                    _kvStore[kv.Key] = kv;
+                                }
+                                else if (msg[0].ConvertToString() == "KTHXBAI")
+                                {
+                                    long seq = BitConverter.ToInt64(msg[1].ToByteArray(), 0);
+                                    Interlocked.Exchange(ref _sequence, seq);
+                                    Console.WriteLine($"[BACKUP] Kezdeti szinkronizáció kész! Szekvencia beállítva: {seq}");
+                                    syncDone = true;
+                                }
+                            }
+                            else
+                            {
+                                Console.WriteLine("[BACKUP] Primary nem válaszol (Timeout). Üres állapotból indulunk.");
+                                break;
+                            }
+                        }
+                    }
+
+                    // Feliratkozás az élő frissítésekre a snapshot után
                     peerSub.Connect($"tcp://{peerHost}:{port + 1}");
                     peerSub.SubscribeToAnyTopic();
                     peerSub.ReceiveReady += (s, e) =>
@@ -41,7 +79,6 @@ namespace Core
                         {
                             var kv = KvMsg.FromFrames(msg, 1);
                             _kvStore[kv.Key] = kv;
-                            // Szekvencia szinkronizálása: ne induljon újra 0-ról
                             Interlocked.Exchange(ref _sequence, Math.Max(Interlocked.Read(ref _sequence), kv.Sequence));
                             Console.WriteLine($"[BACKUP SYNC] Adat érkezett a Primary-től: {kv.Key} (Seq: {kv.Sequence})");
                         }

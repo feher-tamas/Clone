@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="ClonerClientConsole/ClonerClientConsole.csproj" Id="450ceac9-d540-425a-ab3c-8cdef29844a1" />
+  <Project Path="Core/Core.csproj" />
+  <Project Path="ServerWorker/ServerWorker.csproj" />
+</Solution>
